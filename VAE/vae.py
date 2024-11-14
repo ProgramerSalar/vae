@@ -22,8 +22,66 @@ class VanillaVAE(BaseVAE):
         self.in_channels = in_channels
         self.hidden_dims = hidden_dims
         
-        module = []
+        modules = []
+        if hidden_dims is None:
+            hidden_dims = [32, 64, 128, 256, 512]
 
+        # Build Encoder 
+        for h_dim in hidden_dims:
+            modules.append(
+                nn.Sequential(
+                    nn.Conv2d(in_channels=in_channels,out_channels=h_dim, kernel_size=3, stride=2, padding=1),
+                    nn.BatchNorm2d(h_dim),
+                    nn.LeakyReLU()
+                )
+            )
+
+            in_channels = h_dim
+
+        self.encoder = nn.Sequential(*modules)
+        self.fc_mu = nn.Linear(hidden_dims[-1]*4, latent_dim)
+        self.fc_var = nn.Linear(hidden_dims[-1]*4, latent_dim)
+
+
+        # Build Decoder 
+        modules = []
+        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1]*4)
+        hidden_dims.reverse()
+
+        for i in range(len(hidden_dims) - 1):
+            modules.append(
+                nn.Sequential(
+                    nn.ConvTranspose2d(hidden_dims[i],
+                                       hidden_dims[i + 1],
+                                       kernel_size=3,
+                                       stride=2,
+                                       padding=1,
+                                       output_padding=1),
+
+                    nn.BatchNorm2d(hidden_dims[i + 1]),
+                    nn.LeakyReLU()
+                )
+            )
+
+
+        self.decoder = nn.Sequential(*modules)
+
+        self.final_layer = nn.Sequential(
+            nn.ConvTranspose2d(hidden_dims[-1],
+                               hidden_dims[-1],
+                               kernel_size=3,
+                               stride=2,
+                               padding=1,
+                               output_padding=1),
+
+            nn.BatchNorm2d(hidden_dims[-1]),
+            nn.LeakyReLU(),
+            nn.Conv2d(hidden_dims[-1], out_channels=3,
+                      kernel_size=3,
+                      padding=1),
+                      
+            nn.Tanh()
+        )
 
 
 
@@ -92,6 +150,59 @@ class VanillaVAE(BaseVAE):
             'KLD': -kid_loss.detach()
         }
     
+
+    def reparametrize(self, mu: Tensor, logvar: Tensor) -> Tensor:
+
+        """ 
+        Reparametrization trick to sample from N(mu, var) from N(0, 1)
+        :param mu: (Tensor) Mean of the latent Gaussian [B x D]   -> (batch_size, dimension_size)
+        :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
+        :return: (Tensor) [B x D]
+        """
+
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps * std + mu 
+    
+
+    def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
+        mu, log_var = self.encode(input)
+        z = self.reparametrize(mu, log_var)
+        return [self.decode(z), input, mu, log_var]
+    
+
+    def sample(self,
+               num_samples: int,
+               current_device: int,
+               **kwargs) -> Tensor:
+        
+        """ 
+        Samples from the latent space and return the corresponding image space map.
+        :param num_samples: (Int) number of sampels 
+        :param current_device: (Int) Device to run the model 
+        :return: (Tensor)
+        """
+
+        z = torch.randn(num_samples,
+                        self.latent_dim)
+        
+        z = z.to(current_device)
+
+        samples = self.decode(z)
+        return samples
+    
+
+    def generate(self, x: Tensor, **kwargs) -> Tensor: 
+
+        """ 
+        Given an input image x, return the reconstructed image 
+        :param x: (Tensor) [B x C x H x W]
+        :return: (Tensor) [B x C x H x W]
+        """
+
+        return self.forward(x)[0]
+
+
 
     
     
